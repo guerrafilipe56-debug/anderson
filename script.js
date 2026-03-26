@@ -41,6 +41,11 @@ const refs = {
   loginUsername: document.getElementById("login-username"),
   loginPassword: document.getElementById("login-password"),
   loginSubmitButton: document.getElementById("login-submit-button"),
+  registerForm: document.getElementById("register-form"),
+  registerUsername: document.getElementById("register-username"),
+  registerPassword: document.getElementById("register-password"),
+  registerPasswordConfirm: document.getElementById("register-password-confirm"),
+  registerSubmitButton: document.getElementById("register-submit-button"),
   appShell: document.getElementById("app-shell"),
   appMessage: document.getElementById("app-message"),
   storageModeChip: document.getElementById("storage-mode-chip"),
@@ -106,6 +111,9 @@ async function initialize() {
   });
   refs.loginForm.addEventListener("submit", (event) => {
     void handleLoginSubmit(event);
+  });
+  refs.registerForm.addEventListener("submit", (event) => {
+    void handleRegisterSubmit(event);
   });
   refs.logoutButton.addEventListener("click", () => {
     void handleLogout();
@@ -236,6 +244,57 @@ async function handleLoginSubmit(event) {
   } catch (error) {
     if (error.message !== "AUTH_REQUIRED") {
       showAuthMessage(error.message || "Nao foi possivel entrar.", "warn");
+    }
+  }
+}
+
+async function handleRegisterSubmit(event) {
+  event.preventDefault();
+
+  if (!state.serverReady) {
+    showAuthMessage("Servidor offline. Rode npm run dev localmente ou publique a API na Vercel.", "warn");
+    return;
+  }
+
+  const username = refs.registerUsername.value.trim();
+  const password = refs.registerPassword.value;
+  const passwordConfirm = refs.registerPasswordConfirm.value;
+
+  if (username.length < 3) {
+    showAuthMessage("Use um usuario com pelo menos 3 caracteres.", "warn");
+    refs.registerUsername.focus();
+    return;
+  }
+
+  if (password.length < 6) {
+    showAuthMessage("Use uma senha com pelo menos 6 caracteres.", "warn");
+    refs.registerPassword.focus();
+    return;
+  }
+
+  if (password !== passwordConfirm) {
+    showAuthMessage("A confirmacao da senha nao confere.", "warn");
+    refs.registerPasswordConfirm.focus();
+    return;
+  }
+
+  try {
+    const authStatus = await fetchJson("/auth/register", {
+      method: "POST",
+      authRoute: true,
+      body: {
+        username,
+        password
+      }
+    });
+
+    refs.registerForm.reset();
+    applyAuthStatus(authStatus);
+    await loadProtectedData({ attemptMigration: true });
+    showAppMessage("Conta criada com sucesso.");
+  } catch (error) {
+    if (error.message !== "AUTH_REQUIRED") {
+      showAuthMessage(error.message || "Nao foi possivel criar a conta.", "warn");
     }
   }
 }
@@ -582,6 +641,7 @@ function renderAuthState() {
   refs.loginPanel.classList.toggle("hidden", !showLogin);
   refs.setupSubmitButton.disabled = !state.serverReady;
   refs.loginSubmitButton.disabled = !state.serverReady;
+  refs.registerSubmitButton.disabled = !state.serverReady;
 }
 
 function renderUsersPanel() {

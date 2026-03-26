@@ -82,6 +82,40 @@
             <button id="login-submit-button" class="primary-button" type="submit">Entrar</button>
           </div>
         </form>
+
+        <div class="auth-divider" aria-hidden="true"></div>
+
+        <div class="auth-secondary">
+          <p class="eyebrow">Cadastro livre</p>
+          <h3>Criar minha conta</h3>
+
+          <form id="register-form" class="stack-form">
+            <div class="form-grid">
+              <label class="field field-wide">
+                <span>Usuario</span>
+                <input id="register-username" type="text" autocomplete="username" required>
+              </label>
+
+              <label class="field field-wide">
+                <span>Senha</span>
+                <input id="register-password" type="password" autocomplete="new-password" required>
+              </label>
+
+              <label class="field field-wide">
+                <span>Confirmar senha</span>
+                <input id="register-password-confirm" type="password" autocomplete="new-password" required>
+              </label>
+            </div>
+
+            <p class="field-note">
+              O cadastro livre cria conta de operador. Administradores continuam sendo controlados dentro do painel.
+            </p>
+
+            <div class="form-actions">
+              <button id="register-submit-button" class="ghost-button" type="submit">Criar minha conta</button>
+            </div>
+          </form>
+        </div>
       </article>
     </div>
   </section>

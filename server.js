@@ -136,6 +136,24 @@ async function handleApiRequest(request, response, url) {
     return;
   }
 
+  if (request.method === "POST" && url.pathname === "/api/auth/register") {
+    if (await getUserCount() === 0) {
+      throw createHttpError(409, "Crie o administrador inicial antes de liberar cadastro livre.");
+    }
+
+    const body = await readJsonBody(request);
+    const user = await createUser(body, { forceRole: "operator" });
+    const session = await createSession(user.id);
+
+    setSessionCookie(response, request, session.token);
+    sendJson(response, 201, {
+      setupRequired: false,
+      authenticated: true,
+      user: sanitizeUser(user)
+    });
+    return;
+  }
+
   if (request.method === "POST" && url.pathname === "/api/auth/logout") {
     const token = getSessionTokenFromRequest(request);
 
