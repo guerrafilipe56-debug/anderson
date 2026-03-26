@@ -13,6 +13,7 @@ const SESSION_COOKIE_NAME = "estoque_session";
 const SESSION_MAX_AGE_SECONDS = 60 * 60 * 24 * 7;
 const REMOTE_DATABASE_URL = process.env.TURSO_DATABASE_URL || process.env.LIBSQL_URL || "";
 const REMOTE_DATABASE_TOKEN = process.env.TURSO_AUTH_TOKEN || process.env.LIBSQL_AUTH_TOKEN || "";
+const PUBLIC_SIGNUP_ENABLED = /^true$/i.test(String(process.env.PUBLIC_SIGNUP_ENABLED || ""));
 
 fs.mkdirSync(DATA_DIR, { recursive: true });
 
@@ -99,6 +100,7 @@ async function handleApiRequest(request, response, url) {
     sendJson(response, 200, {
       setupRequired,
       authenticated: Boolean(session),
+      publicSignupEnabled: PUBLIC_SIGNUP_ENABLED && !setupRequired,
       user: session ? sanitizeUser(session.user) : null
     });
     return;
@@ -137,6 +139,10 @@ async function handleApiRequest(request, response, url) {
   }
 
   if (request.method === "POST" && url.pathname === "/api/auth/register") {
+    if (!PUBLIC_SIGNUP_ENABLED) {
+      throw createHttpError(403, "Cadastro livre desativado.");
+    }
+
     if (await getUserCount() === 0) {
       throw createHttpError(409, "Crie o administrador inicial antes de liberar cadastro livre.");
     }
@@ -149,6 +155,7 @@ async function handleApiRequest(request, response, url) {
     sendJson(response, 201, {
       setupRequired: false,
       authenticated: true,
+      publicSignupEnabled: true,
       user: sanitizeUser(user)
     });
     return;

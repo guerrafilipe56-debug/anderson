@@ -23,6 +23,7 @@ const state = {
   serverReady: false,
   authenticated: false,
   setupRequired: false,
+  publicSignupEnabled: false,
   currentUser: null,
   storageMode: "sqlite"
 };
@@ -41,6 +42,7 @@ const refs = {
   loginUsername: document.getElementById("login-username"),
   loginPassword: document.getElementById("login-password"),
   loginSubmitButton: document.getElementById("login-submit-button"),
+  registerPanel: document.getElementById("register-panel"),
   registerForm: document.getElementById("register-form"),
   registerUsername: document.getElementById("register-username"),
   registerPassword: document.getElementById("register-password"),
@@ -161,6 +163,7 @@ async function bootstrapApp() {
     state.serverReady = false;
     state.authenticated = false;
     state.setupRequired = false;
+    state.publicSignupEnabled = false;
     state.currentUser = null;
     clearProtectedState();
     render();
@@ -316,6 +319,7 @@ async function handleLogout() {
   state.authenticated = false;
   state.currentUser = null;
   state.setupRequired = false;
+  state.publicSignupEnabled = false;
   clearProtectedState();
   render();
   showAuthMessage("Sessao encerrada.");
@@ -634,14 +638,16 @@ function renderAuthState() {
   const showAuth = !state.authenticated;
   const showSetup = showAuth && state.serverReady && state.setupRequired;
   const showLogin = showAuth && state.serverReady && !state.setupRequired;
+  const showRegister = showLogin && state.publicSignupEnabled;
 
   refs.authShell.classList.toggle("hidden", !showAuth);
   refs.appShell.classList.toggle("hidden", showAuth);
   refs.setupPanel.classList.toggle("hidden", !showSetup);
   refs.loginPanel.classList.toggle("hidden", !showLogin);
+  refs.registerPanel.classList.toggle("hidden", !showRegister);
   refs.setupSubmitButton.disabled = !state.serverReady;
   refs.loginSubmitButton.disabled = !state.serverReady;
-  refs.registerSubmitButton.disabled = !state.serverReady;
+  refs.registerSubmitButton.disabled = !state.serverReady || !showRegister;
 }
 
 function renderUsersPanel() {
@@ -1096,6 +1102,7 @@ async function refreshState() {
 function applyAuthStatus(authStatus) {
   state.setupRequired = Boolean(authStatus.setupRequired);
   state.authenticated = Boolean(authStatus.authenticated);
+  state.publicSignupEnabled = Boolean(authStatus.publicSignupEnabled);
   state.currentUser = authStatus.user || null;
 
   if (!state.authenticated) {
