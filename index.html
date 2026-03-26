@@ -1,0 +1,379 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Controle de Estoque</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <div class="page-glow page-glow-left" aria-hidden="true"></div>
+  <div class="page-glow page-glow-right" aria-hidden="true"></div>
+
+  <section id="auth-shell" class="auth-shell">
+    <div id="auth-message" class="app-message hidden" role="status" aria-live="polite"></div>
+
+    <div class="auth-grid">
+      <article class="auth-card auth-card-copy">
+        <p class="eyebrow">Acesso protegido</p>
+        <h1>Controle o estoque com login e senha.</h1>
+        <p class="hero-copy">
+          O sistema agora exige autenticacao para proteger materiais, precos, movimentacoes e relatorios. No primeiro acesso, crie o usuario administrador.
+        </p>
+        <p class="field-note">
+          Depois do login, o acesso fica liberado neste navegador ate voce sair da sessao.
+        </p>
+      </article>
+
+      <article id="setup-panel" class="auth-card hidden">
+        <div class="panel-heading">
+          <div>
+            <p class="eyebrow">Primeiro acesso</p>
+            <h2>Criar administrador</h2>
+          </div>
+        </div>
+
+        <form id="setup-form" class="stack-form">
+          <div class="form-grid">
+            <label class="field field-wide">
+              <span>Usuario</span>
+              <input id="setup-username" type="text" placeholder="Ex.: admin" autocomplete="username" required>
+            </label>
+
+            <label class="field field-wide">
+              <span>Senha</span>
+              <input id="setup-password" type="password" placeholder="Minimo de 6 caracteres" autocomplete="new-password" required>
+            </label>
+
+            <label class="field field-wide">
+              <span>Confirmar senha</span>
+              <input id="setup-password-confirm" type="password" placeholder="Repita a senha" autocomplete="new-password" required>
+            </label>
+          </div>
+
+          <div class="form-actions">
+            <button id="setup-submit-button" class="primary-button" type="submit">Criar acesso</button>
+          </div>
+        </form>
+      </article>
+
+      <article id="login-panel" class="auth-card hidden">
+        <div class="panel-heading">
+          <div>
+            <p class="eyebrow">Entrar</p>
+            <h2>Login do sistema</h2>
+          </div>
+        </div>
+
+        <form id="login-form" class="stack-form">
+          <div class="form-grid">
+            <label class="field field-wide">
+              <span>Usuario</span>
+              <input id="login-username" type="text" autocomplete="username" required>
+            </label>
+
+            <label class="field field-wide">
+              <span>Senha</span>
+              <input id="login-password" type="password" autocomplete="current-password" required>
+            </label>
+          </div>
+
+          <div class="form-actions">
+            <button id="login-submit-button" class="primary-button" type="submit">Entrar</button>
+          </div>
+        </form>
+      </article>
+    </div>
+  </section>
+
+  <main id="app-shell" class="app-shell hidden">
+    <header class="hero">
+      <div class="hero-copy-block">
+        <p class="eyebrow">Controle local de estoque</p>
+        <h1>Registre materiais, acompanhe preco e veja falta de estoque no mesmo painel.</h1>
+        <p class="hero-copy">
+          Cadastre cada item, lance entradas e saidas e acompanhe quais materiais precisam de reposicao antes de travar o trabalho.
+        </p>
+      </div>
+
+      <div class="hero-panel">
+        <div class="hero-panel-top">
+          <span id="storage-mode-chip" class="hero-chip">Banco local: carregando...</span>
+          <button id="logout-button" class="ghost-button" type="button">Sair</button>
+        </div>
+        <span id="current-user-chip" class="hero-chip hidden"></span>
+        <p id="storage-mode-text">
+          O sistema funciona localmente. Os dados ficam gravados no banco do proprio navegador.
+        </p>
+      </div>
+    </header>
+
+    <div id="app-message" class="app-message hidden" role="status" aria-live="polite"></div>
+
+    <section class="stats-grid" aria-label="Resumo do estoque">
+      <article class="stat-card">
+        <p class="stat-label">Materiais cadastrados</p>
+        <strong id="stat-total-materials" class="stat-value">0</strong>
+        <span class="stat-helper">Base atual de itens registrados</span>
+      </article>
+
+      <article class="stat-card">
+        <p class="stat-label">Unidades em estoque</p>
+        <strong id="stat-total-stock" class="stat-value">0</strong>
+        <span class="stat-helper">Soma de todas as quantidades atuais</span>
+      </article>
+
+      <article class="stat-card">
+        <p class="stat-label">Valor investido</p>
+        <strong id="stat-total-value" class="stat-value">R$ 0,00</strong>
+        <span class="stat-helper">Quantidade atual multiplicada pelo preco de compra</span>
+      </article>
+
+      <article class="stat-card stat-card-warn">
+        <p class="stat-label">Itens em alerta</p>
+        <strong id="stat-low-stock" class="stat-value">0</strong>
+        <span class="stat-helper">Materiais no minimo ou sem estoque</span>
+      </article>
+    </section>
+
+    <section class="layout-grid">
+      <article class="panel">
+        <div class="panel-heading">
+          <div>
+            <p class="eyebrow">Cadastro</p>
+            <h2 id="material-form-title">Novo material</h2>
+          </div>
+          <button id="cancel-edit-button" class="ghost-button hidden" type="button">Cancelar edicao</button>
+        </div>
+
+        <form id="material-form" class="stack-form">
+          <input type="hidden" id="material-id" name="materialId">
+
+          <div class="form-grid">
+            <label class="field">
+              <span>Nome do material</span>
+              <input id="material-name" name="name" type="text" placeholder="Ex.: Cimento CP-II" required>
+            </label>
+
+            <label class="field">
+              <span>Categoria</span>
+              <input id="material-category" name="category" type="text" placeholder="Ex.: Acabamento">
+            </label>
+
+            <label class="field">
+              <span>Unidade</span>
+              <input id="material-unit" name="unit" type="text" placeholder="un, kg, caixa..." value="un">
+            </label>
+
+            <label class="field">
+              <span>Estoque inicial</span>
+              <input id="material-stock" name="stock" type="number" min="0" step="0.01" value="0" required>
+            </label>
+
+            <label class="field">
+              <span>Estoque minimo</span>
+              <input id="material-min-stock" name="minStock" type="number" min="0" step="0.01" value="0" required>
+            </label>
+
+            <label class="field">
+              <span>Preco de compra</span>
+              <input id="material-cost-price" name="costPrice" type="number" min="0" step="0.01" value="0">
+            </label>
+
+            <label class="field">
+              <span>Preco de venda</span>
+              <input id="material-sale-price" name="salePrice" type="number" min="0" step="0.01" value="0">
+            </label>
+
+            <label class="field field-wide">
+              <span>Fornecedor</span>
+              <input id="material-supplier" name="supplier" type="text" placeholder="Opcional">
+            </label>
+          </div>
+
+          <p class="field-note">
+            Depois do cadastro, use a movimentacao para registrar novas entradas, saidas ou ajustes de estoque.
+          </p>
+
+          <div class="form-actions">
+            <button id="material-submit-button" class="primary-button" type="submit">Salvar material</button>
+          </div>
+        </form>
+      </article>
+
+      <article class="panel">
+        <div class="panel-heading">
+          <div>
+            <p class="eyebrow">Movimentacao</p>
+            <h2>Entrada, saida ou ajuste</h2>
+          </div>
+        </div>
+
+        <form id="movement-form" class="stack-form">
+          <div class="form-grid">
+            <label class="field field-wide">
+              <span>Material</span>
+              <select id="movement-material" name="materialId" required></select>
+            </label>
+
+            <label class="field">
+              <span>Tipo</span>
+              <select id="movement-type" name="type">
+                <option value="entry">Entrada</option>
+                <option value="exit">Saida</option>
+                <option value="adjustment">Ajuste</option>
+              </select>
+            </label>
+
+            <label class="field">
+              <span>Quantidade</span>
+              <input id="movement-quantity" name="quantity" type="number" min="0" step="0.01" value="1" required>
+            </label>
+
+            <label class="field">
+              <span>Preco unitario</span>
+              <input id="movement-unit-price" name="unitPrice" type="number" min="0" step="0.01" value="0">
+            </label>
+
+            <label class="field field-wide">
+              <span>Observacao</span>
+              <input id="movement-note" name="note" type="text" placeholder="Opcional">
+            </label>
+          </div>
+
+          <div class="form-actions">
+            <button id="movement-submit-button" class="primary-button" type="submit">Registrar movimentacao</button>
+          </div>
+        </form>
+      </article>
+
+      <article class="panel">
+        <div class="panel-heading">
+          <div>
+            <p class="eyebrow">Alertas</p>
+            <h2>Reposicao imediata</h2>
+          </div>
+        </div>
+
+        <div id="alert-list" class="alert-list"></div>
+      </article>
+    </section>
+
+    <section class="panel">
+      <div class="panel-heading">
+        <div>
+          <p class="eyebrow">Filtro</p>
+          <h2>Busca rapida</h2>
+        </div>
+      </div>
+
+      <div class="filter-bar">
+        <label class="field">
+          <span>Buscar por nome, categoria ou fornecedor</span>
+          <input id="search-input" type="search" placeholder="Digite para filtrar">
+        </label>
+
+        <label class="field">
+          <span>Status</span>
+          <select id="status-filter">
+            <option value="all">Todos</option>
+            <option value="critical">Sem estoque</option>
+            <option value="low">Estoque baixo</option>
+            <option value="normal">Normal</option>
+          </select>
+        </label>
+      </div>
+    </section>
+
+    <section class="report-grid">
+      <article class="panel">
+        <div class="panel-heading">
+          <div>
+            <p class="eyebrow">Exportacao</p>
+            <h2>Arquivos para Excel</h2>
+          </div>
+        </div>
+
+        <div class="report-actions">
+          <button id="export-materials-button" class="ghost-button" type="button">Exportar estoque</button>
+,
+3          <button id="export-movements-button" class="ghost-button" type="button">Exportar movimentacoes</button>
+          <button id="export-purchases-button" class="ghost-button" type="button">Exportar compras</button>
+        </div>
+
+        <p class="field-note">
+          Os relatorios saem em CSV compativel com Excel, para voce abrir, filtrar e imprimir quando precisar.
+        </p>
+      </article>
+
+      <article class="panel">
+        <div class="panel-heading">
+          <div>
+            <p class="eyebrow">Compras</p>
+            <h2>Relatorio de reposicao</h2>
+          </div>
+        </div>
+
+        <div class="mini-stats-grid">
+          <article class="mini-stat-card">
+            <span class="mini-stat-label">Itens para comprar</span>
+            <strong id="purchase-items-count" class="mini-stat-value">0</strong>
+          </article>
+
+          <article class="mini-stat-card">
+            <span class="mini-stat-label">Qtd. sugerida</span>
+            <strong id="purchase-total-quantity" class="mini-stat-value">0</strong>
+          </article>
+
+          <article class="mini-stat-card">
+            <span class="mini-stat-label">Custo estimado</span>
+            <strong id="purchase-total-cost" class="mini-stat-value">R$ 0,00</strong>
+          </article>
+        </div>
+
+        <div id="purchase-report-list" class="purchase-report-list"></div>
+      </article>
+    </section>
+
+    <section class="panel">
+      <div class="panel-heading">
+        <div>
+          <p class="eyebrow">Inventario</p>
+          <h2>Lista de materiais</h2>
+        </div>
+      </div>
+
+      <div class="table-wrap">
+        <table class="inventory-table">
+          <thead>
+            <tr>
+              <th>Material</th>
+              <th>Categoria</th>
+              <th>Atual</th>
+              <th>Minimo</th>
+              <th>Compra</th>
+              <th>Venda</th>
+              <th>Status</th>
+              <th>Acoes</th>
+            </tr>
+          </thead>
+          <tbody id="materials-table-body"></tbody>
+        </table>
+      </div>
+    </section>
+
+    <section class="panel">
+      <div class="panel-heading">
+        <div>
+          <p class="eyebrow">Historico</p>
+          <h2>Ultimas movimentacoes</h2>
+        </div>
+      </div>
+
+      <div id="movement-list" class="movement-list"></div>
+    </section>
+  </main>
+
+  <script src="script.js"></script>
+</body>
+</html>
