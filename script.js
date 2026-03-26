@@ -117,11 +117,6 @@ async function initialize() {
 
   render();
 
-  if (window.location.protocol === "file:") {
-    showAuthMessage("Abra o sistema por http://127.0.0.1:3000/ para usar login e banco.", "warn");
-    return;
-  }
-
   await bootstrapApp();
 }
 
@@ -148,7 +143,7 @@ async function bootstrapApp() {
     state.currentUser = null;
     clearProtectedState();
     render();
-    showAuthMessage("Servidor offline. Inicie com node server.js e abra http://127.0.0.1:3000/.", "warn");
+    showAuthMessage("Servidor offline. Rode npm run dev localmente ou publique a API na Vercel.", "warn");
   }
 }
 
@@ -156,7 +151,7 @@ async function handleSetupSubmit(event) {
   event.preventDefault();
 
   if (!state.serverReady) {
-    showAuthMessage("Servidor offline. Inicie com node server.js.", "warn");
+    showAuthMessage("Servidor offline. Rode npm run dev localmente ou publique a API na Vercel.", "warn");
     return;
   }
 
@@ -207,7 +202,7 @@ async function handleLoginSubmit(event) {
   event.preventDefault();
 
   if (!state.serverReady) {
-    showAuthMessage("Servidor offline. Inicie com node server.js.", "warn");
+    showAuthMessage("Servidor offline. Rode npm run dev localmente ou publique a API na Vercel.", "warn");
     return;
   }
 
@@ -483,8 +478,10 @@ function renderAuthState() {
 }
 
 function updateStorageStatus() {
-  refs.storageModeChip.textContent = "Banco real: SQLite";
-  refs.storageModeText.textContent = "Os dados ficam salvos no arquivo SQLite do projeto e sao protegidos por login.";
+  const storagePresentation = getStorageModePresentation(state.storageMode);
+
+  refs.storageModeChip.textContent = storagePresentation.chipText;
+  refs.storageModeText.textContent = storagePresentation.bodyText;
 
   if (state.currentUser) {
     refs.currentUserChip.textContent = `${state.currentUser.username} (${state.currentUser.role})`;
@@ -863,7 +860,7 @@ async function loadProtectedData({ attemptMigration = false } = {}) {
 
     if (migrated) {
       bootstrapData = await fetchJson("/bootstrap");
-      showAppMessage("Dados antigos migrados para o banco SQLite.");
+      showAppMessage("Dados antigos migrados para o banco atual.");
     }
   }
 
@@ -890,7 +887,7 @@ function applyAuthStatus(authStatus) {
 function applyBootstrapData(bootstrapData) {
   state.materials = Array.isArray(bootstrapData.materials) ? bootstrapData.materials : [];
   state.movements = Array.isArray(bootstrapData.movements) ? bootstrapData.movements : [];
-  state.storageMode = bootstrapData.storageMode || "sqlite";
+  state.storageMode = bootstrapData.storageMode || "sqlite-local";
 }
 
 function clearProtectedState() {
@@ -993,6 +990,27 @@ function safeParseJson(value) {
   } catch (error) {
     return null;
   }
+}
+
+function getStorageModePresentation(storageMode) {
+  if (storageMode === "libsql-remote") {
+    return {
+      chipText: "Banco real: Turso / libSQL",
+      bodyText: "Os dados ficam em banco remoto compativel com Vercel e continuam protegidos por login."
+    };
+  }
+
+  if (storageMode === "sqlite-local") {
+    return {
+      chipText: "Banco local: SQLite",
+      bodyText: "Os dados ficam salvos no arquivo SQLite do projeto e sao protegidos por login."
+    };
+  }
+
+  return {
+    chipText: "Banco: conectado",
+    bodyText: "Os dados do sistema estao sendo carregados do banco configurado."
+  };
 }
 
 function downloadCsv(fileName, rows) {

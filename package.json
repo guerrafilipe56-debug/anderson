@@ -4,6 +4,11 @@
   "private": true,
   "type": "commonjs",
   "scripts": {
-    "start": "node server.js"
+    "dev": "node server.js",
+    "start": "node server.js",
+    "migrate:remote": "node scripts/migrate-local-db.js"
+  },
+  "dependencies": {
+    "@libsql/client": "^0.17.2"
   }
 }

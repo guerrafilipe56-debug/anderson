@@ -3,107 +3,54 @@ const path = require("node:path");
 const { createServer } = require("node:http");
 const { createHash, randomBytes, randomUUID, scryptSync, timingSafeEqual } = require("node:crypto");
 const { URL } = require("node:url");
-const { DatabaseSync } = require("node:sqlite");
+const { createClient } = require("@libsql/client");
 
 const ROOT_DIR = __dirname;
 const DATA_DIR = path.join(ROOT_DIR, "data");
-const DATABASE_PATH = path.join(DATA_DIR, "stock.db");
+const LOCAL_DATABASE_PATH = path.join(DATA_DIR, "stock.db");
 const PORT = Number(process.env.PORT) || 3000;
 const SESSION_COOKIE_NAME = "estoque_session";
 const SESSION_MAX_AGE_SECONDS = 60 * 60 * 24 * 7;
+const REMOTE_DATABASE_URL = process.env.TURSO_DATABASE_URL || process.env.LIBSQL_URL || "";
+const REMOTE_DATABASE_TOKEN = process.env.TURSO_AUTH_TOKEN || process.env.LIBSQL_AUTH_TOKEN || "";
 
 fs.mkdirSync(DATA_DIR, { recursive: true });
 
-const db = new DatabaseSync(DATABASE_PATH);
+const runtimeConfig = createRuntimeConfig();
+const db = createClient(runtimeConfig.client);
+let databaseReadyPromise = null;
 
-db.exec(`
-  PRAGMA foreign_keys = ON;
+if (require.main === module) {
+  const server = createServer((request, response) => {
+    void handleNodeRequest(request, response);
+  });
 
-  CREATE TABLE IF NOT EXISTS materials (
-    id TEXT PRIMARY KEY,
-    name TEXT NOT NULL,
-    category TEXT NOT NULL DEFAULT '',
-    unit TEXT NOT NULL DEFAULT 'un',
-    stock REAL NOT NULL DEFAULT 0,
-    min_stock REAL NOT NULL DEFAULT 0,
-    cost_price REAL NOT NULL DEFAULT 0,
-    sale_price REAL NOT NULL DEFAULT 0,
-    supplier TEXT NOT NULL DEFAULT '',
-    created_at TEXT NOT NULL,
-    updated_at TEXT NOT NULL
-  );
+  server.listen(PORT, () => {
+    console.log(`Servidor de estoque rodando em http://127.0.0.1:${PORT}`);
+    console.log(`Banco ativo: ${runtimeConfig.storageMode}`);
+    console.log(`Conexao: ${runtimeConfig.displayUrl}`);
+  });
+}
 
-  CREATE TABLE IF NOT EXISTS movements (
-    id TEXT PRIMARY KEY,
-    material_id TEXT NOT NULL,
-    material_name TEXT NOT NULL,
-    type TEXT NOT NULL,
-    quantity REAL NOT NULL,
-    unit TEXT NOT NULL,
-    unit_price REAL NOT NULL DEFAULT 0,
-    note TEXT NOT NULL DEFAULT '',
-    previous_stock REAL NOT NULL,
-    new_stock REAL NOT NULL,
-    created_at TEXT NOT NULL,
-    FOREIGN KEY (material_id) REFERENCES materials(id) ON DELETE CASCADE
-  );
+module.exports = {
+  handleNodeRequest,
+  handleServerlessRequest,
+  ensureDatabaseReady
+};
 
-  CREATE TABLE IF NOT EXISTS users (
-    id TEXT PRIMARY KEY,
-    username TEXT NOT NULL UNIQUE,
-    password_hash TEXT NOT NULL,
-    role TEXT NOT NULL DEFAULT 'admin',
-    created_at TEXT NOT NULL,
-    updated_at TEXT NOT NULL
-  );
+async function handleNodeRequest(request, response) {
+  await handleIncomingRequest(request, response, { apiOnly: false });
+}
 
-  CREATE TABLE IF NOT EXISTS sessions (
-    id TEXT PRIMARY KEY,
-    user_id TEXT NOT NULL,
-    token_hash TEXT NOT NULL UNIQUE,
-    created_at TEXT NOT NULL,
-    expires_at TEXT NOT NULL,
-    FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
-  );
-`);
+async function handleServerlessRequest(request, response) {
+  const routeOverride = normalizeRouteOverride(request.query?.route);
+  await handleIncomingRequest(request, response, {
+    apiOnly: true,
+    routeOverride
+  });
+}
 
-const insertMaterialStatement = db.prepare(`
-  INSERT INTO materials (
-    id, name, category, unit, stock, min_stock, cost_price, sale_price, supplier, created_at, updated_at
-  ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-`);
-
-const insertMovementStatement = db.prepare(`
-  INSERT INTO movements (
-    id, material_id, material_name, type, quantity, unit, unit_price, note, previous_stock, new_stock, created_at
-  ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-`);
-
-const upsertImportedMaterialStatement = db.prepare(`
-  INSERT OR REPLACE INTO materials (
-    id, name, category, unit, stock, min_stock, cost_price, sale_price, supplier, created_at, updated_at
-  ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-`);
-
-const upsertImportedMovementStatement = db.prepare(`
-  INSERT OR REPLACE INTO movements (
-    id, material_id, material_name, type, quantity, unit, unit_price, note, previous_stock, new_stock, created_at
-  ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-`);
-
-const insertUserStatement = db.prepare(`
-  INSERT INTO users (
-    id, username, password_hash, role, created_at, updated_at
-  ) VALUES (?, ?, ?, ?, ?, ?)
-`);
-
-const insertSessionStatement = db.prepare(`
-  INSERT INTO sessions (
-    id, user_id, token_hash, created_at, expires_at
-  ) VALUES (?, ?, ?, ?, ?)
-`);
-
-const server = createServer(async (request, response) => {
+async function handleIncomingRequest(request, response, options = {}) {
   setCorsHeaders(request, response);
 
   if (request.method === "OPTIONS") {
@@ -113,12 +60,18 @@ const server = createServer(async (request, response) => {
   }
 
   try {
-    cleanupExpiredSessions();
+    await ensureDatabaseReady();
+    await cleanupExpiredSessions();
 
-    const url = new URL(request.url, `http://${request.headers.host || "127.0.0.1"}`);
+    const url = buildRequestUrl(request, options.routeOverride);
 
     if (url.pathname.startsWith("/api/")) {
       await handleApiRequest(request, response, url);
+      return;
+    }
+
+    if (options.apiOnly) {
+      sendJson(response, 404, { error: "Rota nao encontrada." });
       return;
     }
 
@@ -127,24 +80,21 @@ const server = createServer(async (request, response) => {
       return;
     }
 
-    serveStaticFile(response, url.pathname);
+    serveStaticFile(response, url.pathname, request.method === "HEAD");
   } catch (error) {
-    console.error(error);
+    if (!error.status || error.status >= 500) {
+      console.error(error);
+    }
     sendJson(response, error.status || 500, {
       error: error.message || "Erro interno no servidor."
     });
   }
-});
-
-server.listen(PORT, () => {
-  console.log(`Servidor de estoque rodando em http://127.0.0.1:${PORT}`);
-  console.log(`Banco SQLite em ${DATABASE_PATH}`);
-});
+}
 
 async function handleApiRequest(request, response, url) {
   if (request.method === "GET" && url.pathname === "/api/auth/status") {
-    const setupRequired = getUserCount() === 0;
-    const session = getAuthenticatedSession(request);
+    const setupRequired = await getUserCount() === 0;
+    const session = await getAuthenticatedSession(request);
 
     sendJson(response, 200, {
       setupRequired,
@@ -155,15 +105,15 @@ async function handleApiRequest(request, response, url) {
   }
 
   if (request.method === "POST" && url.pathname === "/api/auth/setup") {
-    if (getUserCount() > 0) {
+    if (await getUserCount() > 0) {
       throw createHttpError(409, "O administrador inicial ja foi criado.");
     }
 
     const body = await readJsonBody(request);
-    const user = createUser(body);
-    const session = createSession(user.id);
+    const user = await createUser(body);
+    const session = await createSession(user.id);
 
-    setSessionCookie(response, session.token);
+    setSessionCookie(response, request, session.token);
     sendJson(response, 201, {
       setupRequired: false,
       authenticated: true,
@@ -174,10 +124,10 @@ async function handleApiRequest(request, response, url) {
 
   if (request.method === "POST" && url.pathname === "/api/auth/login") {
     const body = await readJsonBody(request);
-    const user = authenticateUser(body);
-    const session = createSession(user.id);
+    const user = await authenticateUser(body);
+    const session = await createSession(user.id);
 
-    setSessionCookie(response, session.token);
+    setSessionCookie(response, request, session.token);
     sendJson(response, 200, {
       setupRequired: false,
       authenticated: true,
@@ -190,57 +140,57 @@ async function handleApiRequest(request, response, url) {
     const token = getSessionTokenFromRequest(request);
 
     if (token) {
-      deleteSessionByToken(token);
+      await deleteSessionByToken(token);
     }
 
-    clearSessionCookie(response);
+    clearSessionCookie(response, request);
     sendJson(response, 200, { authenticated: false });
     return;
   }
 
-  const session = requireAuthenticatedSession(request);
+  const session = await requireAuthenticatedSession(request);
 
   if (request.method === "GET" && url.pathname === "/api/bootstrap") {
     sendJson(response, 200, {
-      storageMode: "sqlite",
-      materials: listMaterials(),
-      movements: listMovements(),
+      storageMode: runtimeConfig.storageMode,
+      materials: await listMaterials(),
+      movements: await listMovements(),
       user: sanitizeUser(session.user)
     });
     return;
   }
 
   if (request.method === "GET" && url.pathname === "/api/materials") {
-    sendJson(response, 200, { materials: listMaterials() });
+    sendJson(response, 200, { materials: await listMaterials() });
     return;
   }
 
   if (request.method === "GET" && url.pathname === "/api/movements") {
-    sendJson(response, 200, { movements: listMovements() });
+    sendJson(response, 200, { movements: await listMovements() });
     return;
   }
 
   if (request.method === "POST" && url.pathname === "/api/import") {
     const body = await readJsonBody(request);
-    importLegacyData(body);
+    await importLegacyData(body);
     sendJson(response, 200, {
       imported: true,
-      materials: listMaterials(),
-      movements: listMovements()
+      materials: await listMaterials(),
+      movements: await listMovements()
     });
     return;
   }
 
   if (request.method === "POST" && url.pathname === "/api/materials") {
     const body = await readJsonBody(request);
-    const material = createMaterial(body);
+    const material = await createMaterial(body);
     sendJson(response, 201, { material });
     return;
   }
 
   if (request.method === "POST" && url.pathname === "/api/movements") {
     const body = await readJsonBody(request);
-    const movementResult = createMovement(body);
+    const movementResult = await createMovement(body);
     sendJson(response, 201, movementResult);
     return;
   }
@@ -248,14 +198,14 @@ async function handleApiRequest(request, response, url) {
   if (request.method === "PUT" && url.pathname.startsWith("/api/materials/")) {
     const materialId = decodeURIComponent(url.pathname.replace("/api/materials/", ""));
     const body = await readJsonBody(request);
-    const material = updateMaterial(materialId, body);
+    const material = await updateMaterial(materialId, body);
     sendJson(response, 200, { material });
     return;
   }
 
   if (request.method === "DELETE" && url.pathname.startsWith("/api/materials/")) {
     const materialId = decodeURIComponent(url.pathname.replace("/api/materials/", ""));
-    deleteMaterial(materialId);
+    await deleteMaterial(materialId);
     sendJson(response, 200, { deleted: true });
     return;
   }
@@ -263,8 +213,99 @@ async function handleApiRequest(request, response, url) {
   sendJson(response, 404, { error: "Rota nao encontrada." });
 }
 
+function createRuntimeConfig() {
+  if (REMOTE_DATABASE_URL) {
+    const isLocalFileDatabase = REMOTE_DATABASE_URL.startsWith("file:");
+
+    return {
+      storageMode: isLocalFileDatabase ? "sqlite-local" : "libsql-remote",
+      displayUrl: REMOTE_DATABASE_URL,
+      client: {
+        url: REMOTE_DATABASE_URL,
+        authToken: REMOTE_DATABASE_TOKEN || undefined
+      }
+    };
+  }
+
+  if (process.env.VERCEL) {
+    throw new Error("Configure TURSO_DATABASE_URL e TURSO_AUTH_TOKEN na Vercel antes de publicar.");
+  }
+
+  return {
+    storageMode: "sqlite-local",
+    displayUrl: LOCAL_DATABASE_PATH,
+    client: {
+      url: `file:${LOCAL_DATABASE_PATH.replace(/\\/g, "/")}`
+    }
+  };
+}
+
+async function ensureDatabaseReady() {
+  if (!databaseReadyPromise) {
+    databaseReadyPromise = initializeDatabase().catch((error) => {
+      databaseReadyPromise = null;
+      throw error;
+    });
+  }
+
+  await databaseReadyPromise;
+}
+
+async function initializeDatabase() {
+  await db.executeMultiple(`
+    PRAGMA foreign_keys = ON;
+
+    CREATE TABLE IF NOT EXISTS materials (
+      id TEXT PRIMARY KEY,
+      name TEXT NOT NULL,
+      category TEXT NOT NULL DEFAULT '',
+      unit TEXT NOT NULL DEFAULT 'un',
+      stock REAL NOT NULL DEFAULT 0,
+      min_stock REAL NOT NULL DEFAULT 0,
+      cost_price REAL NOT NULL DEFAULT 0,
+      sale_price REAL NOT NULL DEFAULT 0,
+      supplier TEXT NOT NULL DEFAULT '',
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL
+    );
+
+    CREATE TABLE IF NOT EXISTS movements (
+      id TEXT PRIMARY KEY,
+      material_id TEXT NOT NULL,
+      material_name TEXT NOT NULL,
+      type TEXT NOT NULL,
+      quantity REAL NOT NULL,
+      unit TEXT NOT NULL,
+      unit_price REAL NOT NULL DEFAULT 0,
+      note TEXT NOT NULL DEFAULT '',
+      previous_stock REAL NOT NULL,
+      new_stock REAL NOT NULL,
+      created_at TEXT NOT NULL,
+      FOREIGN KEY (material_id) REFERENCES materials(id) ON DELETE CASCADE
+    );
+
+    CREATE TABLE IF NOT EXISTS users (
+      id TEXT PRIMARY KEY,
+      username TEXT NOT NULL UNIQUE,
+      password_hash TEXT NOT NULL,
+      role TEXT NOT NULL DEFAULT 'admin',
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL
+    );
+
+    CREATE TABLE IF NOT EXISTS sessions (
+      id TEXT PRIMARY KEY,
+      user_id TEXT NOT NULL,
+      token_hash TEXT NOT NULL UNIQUE,
+      created_at TEXT NOT NULL,
+      expires_at TEXT NOT NULL,
+      FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+    );
+  `);
+}
+
 function setCorsHeaders(request, response) {
-  const origin = request.headers.origin;
+  const origin = getHeaderValue(request.headers.origin);
 
   response.setHeader("Access-Control-Allow-Origin", origin || "*");
   response.setHeader("Access-Control-Allow-Headers", "Content-Type");
@@ -280,7 +321,7 @@ function sendJson(response, statusCode, payload) {
   response.end(JSON.stringify(payload));
 }
 
-function serveStaticFile(response, pathname) {
+function serveStaticFile(response, pathname, headOnly = false) {
   const requestedPath = pathname === "/" ? "index.html" : pathname.replace(/^\/+/, "");
   const filePath = path.resolve(ROOT_DIR, requestedPath);
 
@@ -295,6 +336,12 @@ function serveStaticFile(response, pathname) {
   response.writeHead(200, {
     "Content-Type": getContentType(filePath)
   });
+
+  if (headOnly) {
+    response.end();
+    return;
+  }
+
   response.end(fs.readFileSync(filePath));
 }
 
@@ -338,8 +385,8 @@ async function readJsonBody(request) {
   }
 }
 
-function listMaterials() {
-  return db.prepare(`
+async function listMaterials() {
+  return queryAll(`
     SELECT
       id,
       name,
@@ -354,11 +401,11 @@ function listMaterials() {
       updated_at AS updatedAt
     FROM materials
     ORDER BY name COLLATE NOCASE ASC
-  `).all();
+  `);
 }
 
-function listMovements() {
-  return db.prepare(`
+async function listMovements() {
+  return queryAll(`
     SELECT
       id,
       material_id AS materialId,
@@ -373,10 +420,10 @@ function listMovements() {
       created_at AS createdAt
     FROM movements
     ORDER BY created_at DESC
-  `).all();
+  `);
 }
 
-function createMaterial(input) {
+async function createMaterial(input) {
   const material = normalizeMaterialInput(input);
   const timestamp = new Date().toISOString();
   const createdMaterial = {
@@ -393,25 +440,32 @@ function createMaterial(input) {
     updatedAt: timestamp
   };
 
-  insertMaterialStatement.run(
-    createdMaterial.id,
-    createdMaterial.name,
-    createdMaterial.category,
-    createdMaterial.unit,
-    createdMaterial.stock,
-    createdMaterial.minStock,
-    createdMaterial.costPrice,
-    createdMaterial.salePrice,
-    createdMaterial.supplier,
-    createdMaterial.createdAt,
-    createdMaterial.updatedAt
+  await executeSql(
+    `
+      INSERT INTO materials (
+        id, name, category, unit, stock, min_stock, cost_price, sale_price, supplier, created_at, updated_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `,
+    [
+      createdMaterial.id,
+      createdMaterial.name,
+      createdMaterial.category,
+      createdMaterial.unit,
+      createdMaterial.stock,
+      createdMaterial.minStock,
+      createdMaterial.costPrice,
+      createdMaterial.salePrice,
+      createdMaterial.supplier,
+      createdMaterial.createdAt,
+      createdMaterial.updatedAt
+    ]
   );
 
   return createdMaterial;
 }
 
-function updateMaterial(materialId, input) {
-  const existingMaterial = getMaterialById(materialId);
+async function updateMaterial(materialId, input) {
+  const existingMaterial = await getMaterialById(materialId);
 
   if (!existingMaterial) {
     throw createHttpError(404, "Material nao encontrado.");
@@ -430,44 +484,47 @@ function updateMaterial(materialId, input) {
     updatedAt: new Date().toISOString()
   };
 
-  db.prepare(`
-    UPDATE materials
-    SET
-      name = ?,
-      category = ?,
-      unit = ?,
-      min_stock = ?,
-      cost_price = ?,
-      sale_price = ?,
-      supplier = ?,
-      updated_at = ?
-    WHERE id = ?
-  `).run(
-    updatedMaterial.name,
-    updatedMaterial.category,
-    updatedMaterial.unit,
-    updatedMaterial.minStock,
-    updatedMaterial.costPrice,
-    updatedMaterial.salePrice,
-    updatedMaterial.supplier,
-    updatedMaterial.updatedAt,
-    materialId
+  await executeSql(
+    `
+      UPDATE materials
+      SET
+        name = ?,
+        category = ?,
+        unit = ?,
+        min_stock = ?,
+        cost_price = ?,
+        sale_price = ?,
+        supplier = ?,
+        updated_at = ?
+      WHERE id = ?
+    `,
+    [
+      updatedMaterial.name,
+      updatedMaterial.category,
+      updatedMaterial.unit,
+      updatedMaterial.minStock,
+      updatedMaterial.costPrice,
+      updatedMaterial.salePrice,
+      updatedMaterial.supplier,
+      updatedMaterial.updatedAt,
+      materialId
+    ]
   );
 
   return updatedMaterial;
 }
 
-function deleteMaterial(materialId) {
-  const result = db.prepare("DELETE FROM materials WHERE id = ?").run(materialId);
+async function deleteMaterial(materialId) {
+  const result = await executeSql("DELETE FROM materials WHERE id = ?", [materialId]);
 
-  if (!result.changes) {
+  if (!result.rowsAffected) {
     throw createHttpError(404, "Material nao encontrado.");
   }
 }
 
-function createMovement(input) {
+async function createMovement(input) {
   const movementInput = normalizeMovementInput(input);
-  const material = getMaterialById(movementInput.materialId);
+  const material = await getMaterialById(movementInput.materialId);
 
   if (!material) {
     throw createHttpError(404, "Material nao encontrado.");
@@ -511,49 +568,67 @@ function createMovement(input) {
     createdAt: new Date().toISOString()
   };
 
-  runInTransaction(() => {
-    db.prepare(`
-      UPDATE materials
-      SET stock = ?, cost_price = ?, updated_at = ?
-      WHERE id = ?
-    `).run(newStock, newCostPrice, movement.createdAt, material.id);
-
-    insertMovementStatement.run(
-      movement.id,
-      movement.materialId,
-      movement.materialName,
-      movement.type,
-      movement.quantity,
-      movement.unit,
-      movement.unitPrice,
-      movement.note,
-      movement.previousStock,
-      movement.newStock,
-      movement.createdAt
-    );
-  });
+  await executeBatch(
+    [
+      {
+        sql: `
+          UPDATE materials
+          SET stock = ?, cost_price = ?, updated_at = ?
+          WHERE id = ?
+        `,
+        args: [newStock, newCostPrice, movement.createdAt, material.id]
+      },
+      {
+        sql: `
+          INSERT INTO movements (
+            id, material_id, material_name, type, quantity, unit, unit_price, note, previous_stock, new_stock, created_at
+          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        `,
+        args: [
+          movement.id,
+          movement.materialId,
+          movement.materialName,
+          movement.type,
+          movement.quantity,
+          movement.unit,
+          movement.unitPrice,
+          movement.note,
+          movement.previousStock,
+          movement.newStock,
+          movement.createdAt
+        ]
+      }
+    ],
+    "write"
+  );
 
   return {
     movement,
-    material: getMaterialById(material.id)
+    material: await getMaterialById(material.id)
   };
 }
 
-function importLegacyData(payload) {
+async function importLegacyData(payload) {
   const materials = Array.isArray(payload?.materials) ? payload.materials : [];
   const movements = Array.isArray(payload?.movements) ? payload.movements : [];
-  const hasMaterials = db.prepare("SELECT COUNT(*) AS total FROM materials").get().total > 0;
-  const hasMovements = db.prepare("SELECT COUNT(*) AS total FROM movements").get().total > 0;
+  const materialsCount = await queryScalar("SELECT COUNT(*) AS total FROM materials");
+  const movementsCount = await queryScalar("SELECT COUNT(*) AS total FROM movements");
 
-  if (hasMaterials || hasMovements || (!materials.length && !movements.length)) {
+  if (materialsCount > 0 || movementsCount > 0 || (!materials.length && !movements.length)) {
     return;
   }
 
-  runInTransaction(() => {
-    materials.forEach((material) => {
-      const normalizedMaterial = normalizeImportedMaterial(material);
+  const statements = [];
 
-      upsertImportedMaterialStatement.run(
+  materials.forEach((material) => {
+    const normalizedMaterial = normalizeImportedMaterial(material);
+    statements.push({
+      sql: `
+        INSERT OR REPLACE INTO materials (
+          id, name, category, unit, stock, min_stock, cost_price, sale_price, supplier, created_at, updated_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      `,
+      args: [
         normalizedMaterial.id,
         normalizedMaterial.name,
         normalizedMaterial.category,
@@ -565,13 +640,19 @@ function importLegacyData(payload) {
         normalizedMaterial.supplier,
         normalizedMaterial.createdAt,
         normalizedMaterial.updatedAt
-      );
+      ]
     });
+  });
 
-    movements.forEach((movement) => {
-      const normalizedMovement = normalizeImportedMovement(movement);
-
-      upsertImportedMovementStatement.run(
+  movements.forEach((movement) => {
+    const normalizedMovement = normalizeImportedMovement(movement);
+    statements.push({
+      sql: `
+        INSERT OR REPLACE INTO movements (
+          id, material_id, material_name, type, quantity, unit, unit_price, note, previous_stock, new_stock, created_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      `,
+      args: [
         normalizedMovement.id,
         normalizedMovement.materialId,
         normalizedMovement.materialName,
@@ -583,12 +664,16 @@ function importLegacyData(payload) {
         normalizedMovement.previousStock,
         normalizedMovement.newStock,
         normalizedMovement.createdAt
-      );
+      ]
     });
   });
+
+  if (statements.length) {
+    await executeBatch(statements, "write");
+  }
 }
 
-function createUser(input) {
+async function createUser(input) {
   const username = String(input?.username || "").trim();
   const password = String(input?.password || "");
 
@@ -600,7 +685,7 @@ function createUser(input) {
     throw createHttpError(400, "Use uma senha com pelo menos 6 caracteres.");
   }
 
-  if (getUserByUsername(username)) {
+  if (await getUserByUsername(username)) {
     throw createHttpError(409, "Esse usuario ja existe.");
   }
 
@@ -614,22 +699,29 @@ function createUser(input) {
     updatedAt: timestamp
   };
 
-  insertUserStatement.run(
-    user.id,
-    user.username,
-    user.passwordHash,
-    user.role,
-    user.createdAt,
-    user.updatedAt
+  await executeSql(
+    `
+      INSERT INTO users (
+        id, username, password_hash, role, created_at, updated_at
+      ) VALUES (?, ?, ?, ?, ?, ?)
+    `,
+    [
+      user.id,
+      user.username,
+      user.passwordHash,
+      user.role,
+      user.createdAt,
+      user.updatedAt
+    ]
   );
 
   return user;
 }
 
-function authenticateUser(input) {
+async function authenticateUser(input) {
   const username = String(input?.username || "").trim();
   const password = String(input?.password || "");
-  const user = getUserByUsername(username);
+  const user = await getUserByUsername(username);
 
   if (!user || !verifyPassword(password, user.passwordHash)) {
     throw createHttpError(401, "Usuario ou senha invalidos.");
@@ -638,7 +730,7 @@ function authenticateUser(input) {
   return user;
 }
 
-function createSession(userId) {
+async function createSession(userId) {
   const token = randomBytes(32).toString("hex");
   const session = {
     id: randomUUID(),
@@ -649,19 +741,20 @@ function createSession(userId) {
     expiresAt: new Date(Date.now() + SESSION_MAX_AGE_SECONDS * 1000).toISOString()
   };
 
-  insertSessionStatement.run(
-    session.id,
-    session.userId,
-    session.tokenHash,
-    session.createdAt,
-    session.expiresAt
+  await executeSql(
+    `
+      INSERT INTO sessions (
+        id, user_id, token_hash, created_at, expires_at
+      ) VALUES (?, ?, ?, ?, ?)
+    `,
+    [session.id, session.userId, session.tokenHash, session.createdAt, session.expiresAt]
   );
 
   return session;
 }
 
-function requireAuthenticatedSession(request) {
-  const session = getAuthenticatedSession(request);
+async function requireAuthenticatedSession(request) {
+  const session = await getAuthenticatedSession(request);
 
   if (!session) {
     throw createHttpError(401, "Sua sessao expirou. Entre novamente.");
@@ -670,29 +763,32 @@ function requireAuthenticatedSession(request) {
   return session;
 }
 
-function getAuthenticatedSession(request) {
+async function getAuthenticatedSession(request) {
   const token = getSessionTokenFromRequest(request);
 
   if (!token) {
     return null;
   }
 
-  const row = db.prepare(`
-    SELECT
-      sessions.id AS sessionId,
-      sessions.user_id AS userId,
-      sessions.expires_at AS expiresAt,
-      users.id AS id,
-      users.username AS username,
-      users.role AS role,
-      users.created_at AS createdAt,
-      users.updated_at AS updatedAt
-    FROM sessions
-    JOIN users ON users.id = sessions.user_id
-    WHERE sessions.token_hash = ?
-      AND sessions.expires_at > ?
-    LIMIT 1
-  `).get(hashSessionToken(token), new Date().toISOString());
+  const row = await queryOne(
+    `
+      SELECT
+        sessions.id AS sessionId,
+        sessions.user_id AS userId,
+        sessions.expires_at AS expiresAt,
+        users.id AS id,
+        users.username AS username,
+        users.role AS role,
+        users.created_at AS createdAt,
+        users.updated_at AS updatedAt
+      FROM sessions
+      JOIN users ON users.id = sessions.user_id
+      WHERE sessions.token_hash = ?
+        AND sessions.expires_at > ?
+      LIMIT 1
+    `,
+    [hashSessionToken(token), new Date().toISOString()]
+  );
 
   if (!row) {
     return null;
@@ -713,66 +809,72 @@ function getAuthenticatedSession(request) {
 }
 
 function getSessionTokenFromRequest(request) {
-  const cookies = parseCookies(request.headers.cookie || "");
+  const cookies = parseCookies(getHeaderValue(request.headers.cookie) || "");
   return cookies[SESSION_COOKIE_NAME] || "";
 }
 
-function setSessionCookie(response, token) {
-  response.setHeader("Set-Cookie", `${SESSION_COOKIE_NAME}=${token}; Max-Age=${SESSION_MAX_AGE_SECONDS}; Path=/; HttpOnly; SameSite=Lax`);
+function setSessionCookie(response, request, token) {
+  response.setHeader("Set-Cookie", buildSessionCookieValue(request, `${SESSION_COOKIE_NAME}=${token}; Max-Age=${SESSION_MAX_AGE_SECONDS}`));
 }
 
-function clearSessionCookie(response) {
-  response.setHeader("Set-Cookie", `${SESSION_COOKIE_NAME}=; Max-Age=0; Path=/; HttpOnly; SameSite=Lax`);
+function clearSessionCookie(response, request) {
+  response.setHeader("Set-Cookie", buildSessionCookieValue(request, `${SESSION_COOKIE_NAME}=; Max-Age=0`));
 }
 
-function deleteSessionByToken(token) {
+async function deleteSessionByToken(token) {
   if (!token) {
     return;
   }
 
-  db.prepare("DELETE FROM sessions WHERE token_hash = ?").run(hashSessionToken(token));
+  await executeSql("DELETE FROM sessions WHERE token_hash = ?", [hashSessionToken(token)]);
 }
 
-function cleanupExpiredSessions() {
-  db.prepare("DELETE FROM sessions WHERE expires_at <= ?").run(new Date().toISOString());
+async function cleanupExpiredSessions() {
+  await executeSql("DELETE FROM sessions WHERE expires_at <= ?", [new Date().toISOString()]);
 }
 
-function getMaterialById(materialId) {
-  return db.prepare(`
-    SELECT
-      id,
-      name,
-      category,
-      unit,
-      stock,
-      min_stock AS minStock,
-      cost_price AS costPrice,
-      sale_price AS salePrice,
-      supplier,
-      created_at AS createdAt,
-      updated_at AS updatedAt
-    FROM materials
-    WHERE id = ?
-  `).get(materialId) || null;
+async function getMaterialById(materialId) {
+  return queryOne(
+    `
+      SELECT
+        id,
+        name,
+        category,
+        unit,
+        stock,
+        min_stock AS minStock,
+        cost_price AS costPrice,
+        sale_price AS salePrice,
+        supplier,
+        created_at AS createdAt,
+        updated_at AS updatedAt
+      FROM materials
+      WHERE id = ?
+    `,
+    [materialId]
+  );
 }
 
-function getUserByUsername(username) {
-  return db.prepare(`
-    SELECT
-      id,
-      username,
-      password_hash AS passwordHash,
-      role,
-      created_at AS createdAt,
-      updated_at AS updatedAt
-    FROM users
-    WHERE lower(username) = lower(?)
-    LIMIT 1
-  `).get(username) || null;
+async function getUserByUsername(username) {
+  return queryOne(
+    `
+      SELECT
+        id,
+        username,
+        password_hash AS passwordHash,
+        role,
+        created_at AS createdAt,
+        updated_at AS updatedAt
+      FROM users
+      WHERE lower(username) = lower(?)
+      LIMIT 1
+    `,
+    [username]
+  );
 }
 
-function getUserCount() {
-  return db.prepare("SELECT COUNT(*) AS total FROM users").get().total;
+async function getUserCount() {
+  return queryScalar("SELECT COUNT(*) AS total FROM users");
 }
 
 function sanitizeUser(user) {
@@ -922,14 +1024,91 @@ function createHttpError(status, message) {
   return error;
 }
 
-function runInTransaction(callback) {
-  db.exec("BEGIN");
+function buildRequestUrl(request, routeOverride) {
+  const host = getHeaderValue(request.headers["x-forwarded-host"]) || getHeaderValue(request.headers.host) || "127.0.0.1";
+  const protocol = getHeaderValue(request.headers["x-forwarded-proto"]) || (process.env.VERCEL ? "https" : "http");
+  const pathname = routeOverride ? `/api/${routeOverride}` : request.url;
 
-  try {
-    callback();
-    db.exec("COMMIT");
-  } catch (error) {
-    db.exec("ROLLBACK");
-    throw error;
+  return new URL(pathname, `${protocol}://${host}`);
+}
+
+function normalizeRouteOverride(route) {
+  if (Array.isArray(route)) {
+    return route.filter(Boolean).join("/");
   }
+
+  return String(route || "").trim().replace(/^\/+/, "");
+}
+
+function buildSessionCookieValue(request, baseValue) {
+  const secure = isSecureRequest(request) ? "; Secure" : "";
+  return `${baseValue}; Path=/; HttpOnly; SameSite=Lax${secure}`;
+}
+
+function isSecureRequest(request) {
+  const forwardedProto = getHeaderValue(request.headers["x-forwarded-proto"]);
+  return forwardedProto === "https" || Boolean(process.env.VERCEL);
+}
+
+function getHeaderValue(header) {
+  if (Array.isArray(header)) {
+    return header[0] || "";
+  }
+
+  return String(header || "");
+}
+
+async function queryAll(sql, args = []) {
+  const result = await executeSql(sql, args);
+  return result.rows.map((row) => normalizeRow(row));
+}
+
+async function queryOne(sql, args = []) {
+  const rows = await queryAll(sql, args);
+  return rows[0] || null;
+}
+
+async function queryScalar(sql, args = []) {
+  const row = await queryOne(sql, args);
+
+  if (!row) {
+    return 0;
+  }
+
+  const firstKey = Object.keys(row)[0];
+  return toNumber(row[firstKey]);
+}
+
+async function executeSql(sql, args = []) {
+  await ensureDatabaseReady();
+  return db.execute({
+    sql,
+    args
+  });
+}
+
+async function executeBatch(statements, mode = "write") {
+  await ensureDatabaseReady();
+  return db.batch(
+    statements.map((statement) => ({
+      sql: statement.sql,
+      args: statement.args || []
+    })),
+    mode
+  );
+}
+
+function normalizeRow(row) {
+  return Object.fromEntries(
+    Object.entries(row).map(([key, value]) => [key, normalizeDatabaseValue(value)])
+  );
+}
+
+function normalizeDatabaseValue(value) {
+  if (typeof value === "bigint") {
+    const numericValue = Number(value);
+    return Number.isSafeInteger(numericValue) ? numericValue : value.toString();
+  }
+
+  return value;
 }
