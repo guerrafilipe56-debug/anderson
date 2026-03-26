@@ -14,6 +14,7 @@ const bannerTimeouts = new Map();
 const state = {
   materials: [],
   movements: [],
+  users: [],
   editingMaterialId: null,
   filters: {
     search: "",
@@ -46,6 +47,14 @@ const refs = {
   storageModeText: document.getElementById("storage-mode-text"),
   currentUserChip: document.getElementById("current-user-chip"),
   logoutButton: document.getElementById("logout-button"),
+  usersPanel: document.getElementById("users-panel"),
+  userForm: document.getElementById("user-form"),
+  userUsername: document.getElementById("user-username"),
+  userRole: document.getElementById("user-role"),
+  userPassword: document.getElementById("user-password"),
+  userPasswordConfirm: document.getElementById("user-password-confirm"),
+  userSubmitButton: document.getElementById("user-submit-button"),
+  userList: document.getElementById("user-list"),
   materialForm: document.getElementById("material-form"),
   materialFormTitle: document.getElementById("material-form-title"),
   materialId: document.getElementById("material-id"),
@@ -101,6 +110,10 @@ async function initialize() {
   refs.logoutButton.addEventListener("click", () => {
     void handleLogout();
   });
+  refs.userForm.addEventListener("submit", (event) => {
+    void handleUserSubmit(event);
+  });
+  refs.userList.addEventListener("click", handleUserListActions);
   refs.materialForm.addEventListener("submit", (event) => {
     void handleMaterialSubmit(event);
   });
@@ -247,6 +260,99 @@ async function handleLogout() {
   clearProtectedState();
   render();
   showAuthMessage("Sessao encerrada.");
+}
+
+async function handleUserSubmit(event) {
+  event.preventDefault();
+
+  if (!ensureAdminAccess()) {
+    return;
+  }
+
+  const username = refs.userUsername.value.trim();
+  const password = refs.userPassword.value;
+  const passwordConfirm = refs.userPasswordConfirm.value;
+
+  if (username.length < 3) {
+    showAppMessage("Use um usuario com pelo menos 3 caracteres.", "warn");
+    refs.userUsername.focus();
+    return;
+  }
+
+  if (password.length < 6) {
+    showAppMessage("Use uma senha com pelo menos 6 caracteres.", "warn");
+    refs.userPassword.focus();
+    return;
+  }
+
+  if (password !== passwordConfirm) {
+    showAppMessage("A confirmacao da senha nao confere.", "warn");
+    refs.userPasswordConfirm.focus();
+    return;
+  }
+
+  try {
+    await fetchJson("/users", {
+      method: "POST",
+      body: {
+        username,
+        password,
+        role: refs.userRole.value
+      }
+    });
+
+    refs.userForm.reset();
+    refs.userRole.value = "operator";
+    await refreshState();
+    showAppMessage("Conta criada com sucesso.");
+  } catch (error) {
+    if (error.message !== "AUTH_REQUIRED") {
+      showAppMessage(error.message || "Nao foi possivel criar a conta.", "warn");
+    }
+  }
+}
+
+function handleUserListActions(event) {
+  const button = event.target.closest("button[data-user-action]");
+
+  if (!button) {
+    return;
+  }
+
+  if (button.dataset.userAction === "delete") {
+    void deleteUserAccount(button.dataset.id);
+  }
+}
+
+async function deleteUserAccount(userId) {
+  if (!ensureAdminAccess()) {
+    return;
+  }
+
+  const user = state.users.find((item) => item.id === userId);
+
+  if (!user) {
+    return;
+  }
+
+  const confirmed = window.confirm(`Excluir a conta "${user.username}"?`);
+
+  if (!confirmed) {
+    return;
+  }
+
+  try {
+    await fetchJson(`/users/${encodeURIComponent(userId)}`, {
+      method: "DELETE"
+    });
+
+    await refreshState();
+    showAppMessage("Conta excluida com sucesso.", "warn");
+  } catch (error) {
+    if (error.message !== "AUTH_REQUIRED") {
+      showAppMessage(error.message || "Nao foi possivel excluir a conta.", "warn");
+    }
+  }
 }
 
 async function handleMaterialSubmit(event) {
@@ -455,6 +561,7 @@ function render() {
   }
 
   updateStorageStatus();
+  renderUsersPanel();
   renderSummary();
   renderMovementSelect();
   renderAlerts();
@@ -475,6 +582,58 @@ function renderAuthState() {
   refs.loginPanel.classList.toggle("hidden", !showLogin);
   refs.setupSubmitButton.disabled = !state.serverReady;
   refs.loginSubmitButton.disabled = !state.serverReady;
+}
+
+function renderUsersPanel() {
+  const isAdmin = isCurrentUserAdmin();
+
+  refs.usersPanel.classList.toggle("hidden", !isAdmin);
+
+  if (!isAdmin) {
+    return;
+  }
+
+  refs.userSubmitButton.disabled = !state.serverReady;
+
+  if (!state.users.length) {
+    refs.userList.innerHTML = `
+      <div class="empty-state">
+        <strong>Nenhuma conta cadastrada.</strong>
+        <p>Crie um usuario novo para liberar acesso a outras pessoas.</p>
+      </div>
+    `;
+    return;
+  }
+
+  refs.userList.innerHTML = state.users
+    .map((user) => {
+      const isCurrentUser = state.currentUser?.id === user.id;
+      const canDelete = !isCurrentUser;
+      const helperText = isCurrentUser ? "Conta atual" : `Criado em ${formatDate(user.createdAt)}`;
+
+      return `
+        <article class="user-card">
+          <div class="user-card-meta">
+            <strong>${escapeHtml(user.username)}</strong>
+            <span class="user-role-badge ${escapeHtml(user.role)}">${escapeHtml(getRoleLabel(user.role))}</span>
+            <p>${escapeHtml(helperText)}</p>
+          </div>
+
+          <div class="user-card-actions">
+            <button
+              class="table-button table-button-danger"
+              type="button"
+              data-user-action="delete"
+              data-id="${user.id}"
+              ${canDelete ? "" : "disabled"}
+            >
+              Excluir
+            </button>
+          </div>
+        </article>
+      `;
+    })
+    .join("");
 }
 
 function updateStorageStatus() {
@@ -887,12 +1046,14 @@ function applyAuthStatus(authStatus) {
 function applyBootstrapData(bootstrapData) {
   state.materials = Array.isArray(bootstrapData.materials) ? bootstrapData.materials : [];
   state.movements = Array.isArray(bootstrapData.movements) ? bootstrapData.movements : [];
+  state.users = Array.isArray(bootstrapData.users) ? bootstrapData.users : [];
   state.storageMode = bootstrapData.storageMode || "sqlite-local";
 }
 
 function clearProtectedState() {
   state.materials = [];
   state.movements = [];
+  state.users = [];
   state.editingMaterialId = null;
   resetMaterialForm();
 }
@@ -982,6 +1143,23 @@ function ensureAuthenticated() {
   showAuthMessage("Entre no sistema para continuar.", "warn");
   render();
   return false;
+}
+
+function ensureAdminAccess() {
+  if (!ensureAuthenticated()) {
+    return false;
+  }
+
+  if (isCurrentUserAdmin()) {
+    return true;
+  }
+
+  showAppMessage("Somente administrador pode criar ou excluir contas.", "warn");
+  return false;
+}
+
+function isCurrentUserAdmin() {
+  return state.currentUser?.role === "admin";
 }
 
 function safeParseJson(value) {
@@ -1150,6 +1328,14 @@ function getMovementTypeName(type) {
   }
 
   return "Ajuste";
+}
+
+function getRoleLabel(role) {
+  if (role === "admin") {
+    return "Administrador";
+  }
+
+  return "Operador";
 }
 
 function formatCurrency(value) {

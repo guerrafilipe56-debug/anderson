@@ -259,6 +259,54 @@
       </article>
     </section>
 
+    <section id="users-panel" class="panel hidden">
+      <div class="panel-heading">
+        <div>
+          <p class="eyebrow">Contas</p>
+          <h2>Criar e gerenciar usuarios</h2>
+        </div>
+      </div>
+
+      <div class="users-grid">
+        <form id="user-form" class="stack-form">
+          <div class="form-grid">
+            <label class="field">
+              <span>Usuario</span>
+              <input id="user-username" type="text" placeholder="Ex.: operador1" autocomplete="username" required>
+            </label>
+
+            <label class="field">
+              <span>Nivel</span>
+              <select id="user-role">
+                <option value="operator">Operador</option>
+                <option value="admin">Administrador</option>
+              </select>
+            </label>
+
+            <label class="field">
+              <span>Senha</span>
+              <input id="user-password" type="password" placeholder="Minimo de 6 caracteres" autocomplete="new-password" required>
+            </label>
+
+            <label class="field">
+              <span>Confirmar senha</span>
+              <input id="user-password-confirm" type="password" placeholder="Repita a senha" autocomplete="new-password" required>
+            </label>
+          </div>
+
+          <p class="field-note">
+            Somente administrador pode criar novas contas. Operador entra no sistema e usa o estoque normalmente.
+          </p>
+
+          <div class="form-actions">
+            <button id="user-submit-button" class="primary-button" type="submit">Criar conta</button>
+          </div>
+        </form>
+
+        <div id="user-list" class="user-list"></div>
+      </div>
+    </section>
+
     <section class="panel">
       <div class="panel-heading">
         <div>

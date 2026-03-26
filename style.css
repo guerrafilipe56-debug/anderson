@@ -293,6 +293,13 @@ select {
   margin-bottom: 16px;
 }
 
+.users-grid {
+  display: grid;
+  grid-template-columns: 0.92fr 1.08fr;
+  gap: 16px;
+  align-items: flex-start;
+}
+
 .panel {
   padding: 24px;
   border-radius: var(--radius-xl);
@@ -469,7 +476,8 @@ select {
 
 .alert-list,
 .movement-list,
-.purchase-report-list {
+.purchase-report-list,
+.user-list {
   display: flex;
   flex-direction: column;
   gap: 12px;
@@ -477,6 +485,7 @@ select {
 
 .alert-card,
 .movement-card,
+.user-card,
 .empty-state {
   padding: 16px;
   border-radius: var(--radius-lg);
@@ -515,6 +524,52 @@ select {
   justify-content: space-between;
   gap: 16px;
   align-items: center;
+}
+
+.user-card {
+  display: flex;
+  justify-content: space-between;
+  gap: 16px;
+  align-items: center;
+}
+
+.user-card strong {
+  display: block;
+  margin-bottom: 6px;
+}
+
+.user-card p,
+.user-card span {
+  margin: 0;
+  color: var(--muted);
+}
+
+.user-card-meta {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.user-role-badge {
+  display: inline-flex;
+  width: fit-content;
+  padding: 7px 11px;
+  border-radius: 999px;
+  font-size: 0.82rem;
+  font-weight: 700;
+  color: var(--accent-strong);
+  background: var(--accent-soft);
+}
+
+.user-role-badge.operator {
+  color: #8a4f0d;
+  background: var(--warning-soft);
+}
+
+.user-card-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
 }
 
 .purchase-card.critical {
@@ -662,6 +717,7 @@ select {
   .hero,
   .layout-grid,
   .report-grid,
+  .users-grid,
   .stats-grid {
     grid-template-columns: 1fr;
   }
@@ -697,7 +753,8 @@ select {
   .panel-heading,
   .alert-card,
   .purchase-card,
-  .movement-card {
+  .movement-card,
+  .user-card {
     flex-direction: column;
     align-items: flex-start;
   }

@@ -110,7 +110,7 @@ async function handleApiRequest(request, response, url) {
     }
 
     const body = await readJsonBody(request);
-    const user = await createUser(body);
+    const user = await createUser(body, { forceRole: "admin" });
     const session = await createSession(user.id);
 
     setSessionCookie(response, request, session.token);
@@ -155,8 +155,31 @@ async function handleApiRequest(request, response, url) {
       storageMode: runtimeConfig.storageMode,
       materials: await listMaterials(),
       movements: await listMovements(),
+      users: session.user.role === "admin" ? await listUsers() : [],
       user: sanitizeUser(session.user)
     });
+    return;
+  }
+
+  if (request.method === "GET" && url.pathname === "/api/users") {
+    requireAdminUser(session.user);
+    sendJson(response, 200, { users: await listUsers() });
+    return;
+  }
+
+  if (request.method === "POST" && url.pathname === "/api/users") {
+    requireAdminUser(session.user);
+    const body = await readJsonBody(request);
+    const user = await createUser(body, { allowRole: true });
+    sendJson(response, 201, { user: sanitizeUser(user) });
+    return;
+  }
+
+  if (request.method === "DELETE" && url.pathname.startsWith("/api/users/")) {
+    requireAdminUser(session.user);
+    const userId = decodeURIComponent(url.pathname.replace("/api/users/", ""));
+    await deleteUserAccount(userId, session.user.id);
+    sendJson(response, 200, { deleted: true });
     return;
   }
 
@@ -423,6 +446,19 @@ async function listMovements() {
   `);
 }
 
+async function listUsers() {
+  return queryAll(`
+    SELECT
+      id,
+      username,
+      role,
+      created_at AS createdAt,
+      updated_at AS updatedAt
+    FROM users
+    ORDER BY lower(username) ASC
+  `);
+}
+
 async function createMaterial(input) {
   const material = normalizeMaterialInput(input);
   const timestamp = new Date().toISOString();
@@ -673,9 +709,10 @@ async function importLegacyData(payload) {
   }
 }
 
-async function createUser(input) {
+async function createUser(input, options = {}) {
   const username = String(input?.username || "").trim();
   const password = String(input?.password || "");
+  const role = normalizeUserRole(input?.role, options);
 
   if (username.length < 3) {
     throw createHttpError(400, "Use um usuario com pelo menos 3 caracteres.");
@@ -694,7 +731,7 @@ async function createUser(input) {
     id: randomUUID(),
     username,
     passwordHash: hashPassword(password),
-    role: "admin",
+    role,
     createdAt: timestamp,
     updatedAt: timestamp
   };
@@ -873,8 +910,30 @@ async function getUserByUsername(username) {
   );
 }
 
+async function getUserById(userId) {
+  return queryOne(
+    `
+      SELECT
+        id,
+        username,
+        password_hash AS passwordHash,
+        role,
+        created_at AS createdAt,
+        updated_at AS updatedAt
+      FROM users
+      WHERE id = ?
+      LIMIT 1
+    `,
+    [userId]
+  );
+}
+
 async function getUserCount() {
   return queryScalar("SELECT COUNT(*) AS total FROM users");
+}
+
+async function countUsersByRole(role) {
+  return queryScalar("SELECT COUNT(*) AS total FROM users WHERE role = ?", [role]);
 }
 
 function sanitizeUser(user) {
@@ -889,6 +948,12 @@ function hashPassword(password) {
   const salt = randomBytes(16).toString("hex");
   const hash = scryptSync(password, salt, 64).toString("hex");
   return `scrypt$${salt}$${hash}`;
+}
+
+function requireAdminUser(user) {
+  if (user?.role !== "admin") {
+    throw createHttpError(403, "Somente administrador pode gerenciar contas.");
+  }
 }
 
 function verifyPassword(password, storedHash) {
@@ -1024,6 +1089,24 @@ function createHttpError(status, message) {
   return error;
 }
 
+function normalizeUserRole(roleInput, options = {}) {
+  if (options.forceRole) {
+    return options.forceRole;
+  }
+
+  const normalizedRole = String(roleInput || "operator").trim().toLowerCase();
+
+  if (!options.allowRole) {
+    return "admin";
+  }
+
+  if (!["admin", "operator"].includes(normalizedRole)) {
+    throw createHttpError(400, "Nivel de usuario invalido.");
+  }
+
+  return normalizedRole;
+}
+
 function buildRequestUrl(request, routeOverride) {
   const host = getHeaderValue(request.headers["x-forwarded-host"]) || getHeaderValue(request.headers.host) || "127.0.0.1";
   const protocol = getHeaderValue(request.headers["x-forwarded-proto"]) || (process.env.VERCEL ? "https" : "http");
@@ -1111,4 +1194,22 @@ function normalizeDatabaseValue(value) {
   }
 
   return value;
+}
+
+async function deleteUserAccount(userId, actingUserId) {
+  const user = await getUserById(userId);
+
+  if (!user) {
+    throw createHttpError(404, "Usuario nao encontrado.");
+  }
+
+  if (user.id === actingUserId) {
+    throw createHttpError(400, "Voce nao pode excluir a propria conta enquanto estiver logado.");
+  }
+
+  if (user.role === "admin" && await countUsersByRole("admin") <= 1) {
+    throw createHttpError(400, "Mantenha pelo menos um administrador ativo.");
+  }
+
+  await executeSql("DELETE FROM users WHERE id = ?", [userId]);
 }

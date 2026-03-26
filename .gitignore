@@ -7,3 +7,5 @@ server.err.log
 data/*.db
 data/*.db-shm
 data/*.db-wal
+
+.vercel
